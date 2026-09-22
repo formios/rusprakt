@@ -1,48 +1,75 @@
+import os
 from flask import Flask, request, jsonify
-from models import db, Note, Category
+from flask_sqlalchemy import SQLAlchemy
 
-def create_app():
-    app = Flask(__name__)
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///notes.db'
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app = Flask(__name__)
 
-    db.init_app(app)
+# Настройка базы данных SQLite
+basedir = os.path.abspath(os.path.dirname(__file__))
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'app.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-    with app.app_context():
-        db.create_all()
+db = SQLAlchemy(app)
 
-    @app.route('/api/notes', methods=['GET'])
-    def get_notes():
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 5, type=int)
-        category_id = request.args.get('category_id', type=int)
+# ------------------------------------------------------------------
+# Модели базы данных
+# ------------------------------------------------------------------
+class Category(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    notes = db.relationship('Note', backref='category', lazy=True)
 
-        query = Note.query
-        if category_id:
-            query = query.filter_by(category_id=category_id)
+class Note(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=True)
 
-        paginated = query.paginate(page=page, per_page=per_page, error_out=False)
+# Инициализация таблиц
+with app.app_context():
+    db.create_all()
 
-        notes_list = [{
-            'id': note.id,
-            'title': note.title,
-            'content': note.content,
-            'category_id': note.category_id
-        } for note in paginated.items]
+# ------------------------------------------------------------------
+# Маршруты (Endpoints)
+# ------------------------------------------------------------------
 
-        return jsonify({
-            'notes': notes_list,
-            'total': paginated.total,
-            'page': page,
-            'pages': paginated.pages
-        }), 200
+# 1. Главная страница (чтобы не было 404 на корневом URL)
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        "status": "online",
+        "message": "REST API Сервис заметок успешно работает!",
+        "endpoints": {
+            "categories": "/api/categories",
+            "notes": "/api/notes"
+        }
+    }), 200
 
-    @app.route('/api/notes', methods=['POST'])
-    def create_note():
+# 2. Категории (GET - просмотреть все, POST - создать новую)
+@app.route('/api/categories', methods=['GET', 'POST'])
+def handle_categories():
+    if request.method == 'POST':
+        data = request.get_json()
+        if not data or 'name' not in data:
+            return jsonify({'error': 'Имя категории обязательно'}), 400
+        
+        new_category = Category(name=data['name'])
+        db.session.add(new_category)
+        db.session.commit()
+        return jsonify({'id': new_category.id, 'message': 'Категория создана'}), 201
+
+    # Если запрос GET (например, при открытии в браузере)
+    categories = Category.query.all()
+    return jsonify([{'id': c.id, 'name': c.name} for c in categories]), 200
+
+# 3. Заметки (GET - просмотреть все, POST - создать новую)
+@app.route('/api/notes', methods=['GET', 'POST'])
+def handle_notes():
+    if request.method == 'POST':
         data = request.get_json()
         if not data or 'title' not in data or 'content' not in data:
-            return jsonify({'error': 'Обязательные поля: title и content'}), 400
-
+            return jsonify({'error': 'Поля title и content обязательны'}), 400
+        
         new_note = Note(
             title=data['title'],
             content=data['content'],
@@ -50,44 +77,30 @@ def create_app():
         )
         db.session.add(new_note)
         db.session.commit()
+        return jsonify({'id': new_note.id, 'message': 'Заметка создана'}), 201
 
-        return jsonify({'message': 'Заметка успешно создана', 'id': new_note.id}), 201
+    # Если запрос GET
+    notes = Note.query.all()
+    return jsonify([{
+        'id': n.id,
+        'title': n.title,
+        'content': n.content,
+        'category_id': n.category_id
+    } for n in notes]), 200
 
-    @app.route('/api/notes/<int:note_id>', methods=['DELETE'])
-    def delete_note(note_id):
-        note = Note.query.get_or_404(note_id)
-        db.session.delete(note)
-        db.session.commit()
-        return jsonify({'message': 'Заметка удалена'}), 200
-
-    @app.route('/api/categories', methods=['POST'])
-    def create_category():
-        data = request.get_json()
-        if not data or 'name' not in data:
-            return jsonify({'error': 'Поле name обязательно'}), 400
-
-        new_cat = Category(name=data['name'])
-        db.session.add(new_cat)
-        db.session.commit()
-
-        return jsonify({'message': 'Категория создана', 'id': new_cat.id}), 201
-
-    return app
-
-app = create_app()
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-
-@app.route('/api/categories', methods=['GET', 'POST'])
-def handle_categories():
-    if request.method == 'POST':
-        data = request.get_json()
-        new_category = Category(name=data['name'])
-        db.session.add(new_category)
-        db.session.commit()
-        return jsonify({"id": new_category.id, "message": "Категория создана"}), 201
+# 4. Удаление заметки по ID
+@app.route('/api/notes/<int:note_id>', methods=['DELETE'])
+def delete_note(note_id):
+    note = Note.query.get(note_id)
+    if not note:
+        return jsonify({'error': 'Заметка не найдена'}), 404
     
-    # Если метод GET (например, при открытии в браузере):
-    categories = Category.query.all()
-    return jsonify([{"id": c.id, "name": c.name} for c in categories]), 200
+    db.session.delete(note)
+    db.session.commit()
+    return jsonify({'message': f'Заметка с id {note_id} удалена'}), 200
+
+# ------------------------------------------------------------------
+# Запуск сервера
+# ------------------------------------------------------------------
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
