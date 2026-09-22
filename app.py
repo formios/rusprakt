@@ -78,3 +78,16 @@ app = create_app()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
+@app.route('/api/categories', methods=['GET', 'POST'])
+def handle_categories():
+    if request.method == 'POST':
+        data = request.get_json()
+        new_category = Category(name=data['name'])
+        db.session.add(new_category)
+        db.session.commit()
+        return jsonify({"id": new_category.id, "message": "Категория создана"}), 201
+    
+    # Если метод GET (например, при открытии в браузере):
+    categories = Category.query.all()
+    return jsonify([{"id": c.id, "name": c.name} for c in categories]), 200
